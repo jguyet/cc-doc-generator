@@ -1,4 +1,5 @@
 #! /bin/ruby -W0
+require 'cast'
 
 class Std
 	def self.file_get_content(file_name)
@@ -21,36 +22,167 @@ class Std
 		file.puts(content);
 		file.close;
 	end
+
+	def self.execute(command)
+		io = IO.popen(command)
+		i = 0
+		result = ""
+		while (ret = io.read(1000)) != nil
+			result += ret
+		end
+		io.close
+		return result
+	end
+
+	def self.isCharacterNumeric?(lookAhead)
+		return (lookAhead =~ /[0-9]/) != nil
+	end
+
+	def self.isCharacterAlpha?(lookAhead)
+		return (lookAhead =~ /[A-Za-z]/) != nil
+	end
+
+	def self.isNumeric?(string)
+		string.each_char() do |c|
+			if Std::isCharacterNumeric?(c) == false
+				return false
+			end
+		end
+		return true
+	end
+
+	def self.isAlpha?(string)
+		string.each_char() do |c|
+			if Std::isCharacterAlpha?(c) == false
+				return false
+			end
+		end
+		return true
+	end
+
+	def self.setStringToAlphaNumeric(string)
+		str = ""
+		string.each_char() do |c|
+			if Std::isCharacterAlpha?(c) == false && Std::isCharacterNumeric?(c) == false
+				next
+			end
+			str += c
+		end
+		return str
+	end
+
+	def self.gccmethodsLines(filename)
+		result = []
+		content = Std::file_get_content(filename).split("\n")
+		un = Std::execute('ctags -x ' + filename + ' 2>&-')
+		de = Std::execute('ctags -x ' + filename + ' 2>&1')
+		puts filename
+		de = de.gsub("Second entry ignored", "").gsub("Duplicate entry in file", "Method").strip!
+		puts de
+		de.split("\n").each do |l|
+			l.split(" ").each do |w|
+				if Std::isNumeric?(Std::setStringToAlphaNumeric(w)) == false
+					next
+				end
+				infos = {"start" => 0, "end" => 0, "name" => "unknow", "content" => []}
+				infos["start"] = Std::setStringToAlphaNumeric(w).to_i
+				if l.include?("line") == true
+					infos["start"] -= 1
+				end
+				infos["start"] -= 1
+
+				if content[infos["start"]].include?("::") == true
+					split = content[infos["start"]].split("(")[0].split("::")
+					infos["name"] = split[split.length - 1]
+				end
+
+				accolad = 0
+				wait = true
+				(infos["start"]...content.length).each() do |lineid|
+					infos["content"].push(content[lineid])
+					if content[lineid].include?("{") == true
+						accolad += 1
+						wait = false
+					end
+					if content[lineid].include?("}") == true
+						accolad -= 1
+						if accolad == 0 && wait == false
+							infos["end"] = lineid
+							break
+						end
+					end
+				end
+				result.push(infos)
+				break
+			end
+		end
+		return result.sort_by { |k| k["start"] }
+	end
 end
 
 class FileToHtml
 
-	TEMPLATE_PATH = "./templates/file.html"
+	TEMPLATE_PATH = "/templates/file.html"
 
-	def initialize(project_name, author, file_path)
+	def initialize(project_name, author, file_path, file_name)
 		@project_name = project_name
 		@author = author
+		@file_path = file_path
 		@file = Std::file_get_content(file_path)
-		@template = Std::file_get_content(FileToHtml::TEMPLATE_PATH)
+		@file_time = File.atime(file_path).to_s[0...20]
+		@file_size = self.get_file_size(file_path)
+		@file_name = file_name
+		@template = Std::file_get_content(File.join(__dir__, FileToHtml::TEMPLATE_PATH))
+		puts @template
 		@html = self.generate_html_file()
 	end
 
-	def generate_div_code()
+	def get_file_size(file_path)
+		bytes = File.stat(file_path).size
+		bytes = (bytes / (1024.0)).round(2)
+		return bytes.to_s + " KB"
+	end
+
+	def generate_methods_code()
+		code = ""
+		Std::gccmethodsLines(@file_path).each do |obj|
+			method = "<div class=\"file\">"
+			method += "<div class=\"file-header\">"
+			method += "<div class=\"file-info\">"
+			method += obj["content"].length.to_s
+			method += " lines"
+			method += "<span class=\"file-info-divider\"></span>"
+			method += obj["name"]
+			method += "</div>"
+			method += "</div>"
+			method += "<div itemprop=\"text\" class=\"blob-wrapper data type-java\">"
+			method += "<table class=\"highlight tab-size js-file-line-container\" data-tab-size=\"8\">"
+			method += "<tbody>"
+			obj["content"].each do |line|
+				method += generate_line_code(line)
+			end
+			method += "</tbody>"
+			method += "</table>"
+			method += "</div>"
+			method += "</div>"
+			code += method
+		end
+		return code
+	end
+
+	def generate_line_code(line)
 		i = 0
 		code = ""
-		@file.split("\n").each do |line|
-			if line[0] == "/" && line[1] == "/"
-				line = "<span class=\"pl-c\">" + line + "</span>"
-			end
-			["include", "void", "return", "operator", "const"].each do |t|
-				line = line.gsub(t, "<span class=\"pl-k\">" + t.to_s + "</span>")
-			end
-			code += "<tr>\n"
-			code += "<td id=\"L" + i.to_s + "\" class=\"blob-num js-line-number\" data-line-number=\"" + i.to_s + "\"></td>"
-			code += "<td id=\"LC" + i.to_s + "\" class=\"blob-code blob-code-inner js-file-line\">" + line.to_s + "</td>"
-			code += "</tr>\n"
-			i += 1
+		if line[0] == "/" && line[1] == "/"
+			line = "<span class=\"pl-c\">" + line + "</span>"
 		end
+		["include", "void", "return", "operator", "const"].each do |t|
+			line = line.gsub(t, "<span class=\"pl-k\">" + t.to_s + "</span>")
+		end
+		code += "<tr>\n"
+		code += "<td id=\"L" + i.to_s + "\" class=\"blob-num js-line-number\" data-line-number=\"" + i.to_s + "\"></td>"
+		code += "<td id=\"LC" + i.to_s + "\" class=\"blob-code blob-code-inner js-file-line\">" + line.to_s + "</td>"
+		code += "</tr>\n"
 		return code
 	end
 
@@ -60,10 +192,13 @@ class FileToHtml
 
 	def generate_html_file()
 		html_file = @template
-		code = self.generate_div_code()
+		code = self.generate_methods_code()
 		html_file = html_file.gsub("@filecontent", code)
 		html_file = html_file.gsub("@numberoflines", get_number_of_lines().to_s)
 		html_file = html_file.gsub("@author", @author)
+		html_file = html_file.gsub("@filename", @file_name)
+		html_file = html_file.gsub("@file_datetime", @file_time)
+		html_file = html_file.gsub("@pods", @file_size)
 		html_file = html_file.gsub("@project_name", @project_name)
 		return html_file
 	end
@@ -83,6 +218,8 @@ class Params
 		@flags = {
 			"help" => {"active" => false, "args" => 0},
 			"file" => {"active" => false, "args" => 1},
+			"name" => {"active" => false, "args" => 1},
+			"author" => {"active" => false, "args" => 1},
 			"cpp" => {"active" => false, "args" => 0, "exc" => true},
 			"c" => {"active" => false, "args" => 0, "exc" => true},
 			"path" => {"active" => true, "args" => 1, "pos" => "length[-1]"}
@@ -166,12 +303,14 @@ def help()
 	puts "--- doc generator"
 	puts "--- author: jguyet"
 	puts "params:"
-	puts "	-r [path]     \"Recursive mode\""
+	puts "	-r [path]       \"Recursive mode\""
 	puts "flags:"
-	puts "	--c           \"c code\""
-	puts "	--cpp         \"cpp code\""
-	puts "	--file [path] \"doc one file\""
-	puts "	--help        \"print help\""
+	puts "	--name [name]   \"project name\""
+	puts "	--author [name] \"author name\""
+	puts "	--c             \"c code\""
+	puts "	--cpp           \"cpp code\""
+	puts "	--file [path]   \"doc one file\""
+	puts "	--help          \"print help\""
 end
 
 def get_files_types(path, types, r)
@@ -233,29 +372,38 @@ def ___MAIN(argv)
 	if params.flags["cpp"]["active"] == true
 		files.push(get_files_types(argpath, [".cpp"], params.params["r"]["active"]))
 	end
-
-	directory_name = "./site"
+	project_name = "Project"
+	if params.flags["name"]["active"]
+		project_name = params.flags["name"]["arg0"]
+	end
+	author = "unknow"
+	if params.flags["author"]["active"]
+		author = params.flags["author"]["arg0"]
+	end
+	directory_name = "site"
+	if params.flags["name"]["active"]
+		directory_name = params.flags["name"]["arg0"]
+	end
 	Dir.mkdir(directory_name) unless File.exists?(directory_name)
 
-	puts File.absolute_path(directory_name)
-	puts File.absolute_path(__dir__)
 	files[0].each do |filepath|
 		#puts FileToHtml.new("AbstractVM", "jguyet", file)
-		path = File.absolute_path(filepath.to_s).gsub(File.absolute_path(__dir__), "")
+		path = File.absolute_path(filepath.to_s).gsub(File.absolute_path(argpath), "")
+		llast = File.absolute_path(directory_name)
 		path = path[1...path.length]
 		## create dirs
-		llast = File.absolute_path(directory_name)
 		path.split("/").each do |dir|
 			if path.split("/")[path.split("/").length - 1] == dir
 				break
 			end
+			puts "HHHHH => " + llast
 			llast = File.join(llast, dir)
 			if File.exist?(llast) == false
 				Dir.mkdir(llast) unless File.exists?(llast)
 			end
 		end
 		filename = File.join(File.absolute_path(directory_name), File.dirname(path), File.basename(filepath.to_s, ".*"))
-		pagehtmlcode = FileToHtml.new("AbstractVM", "jguyet", filepath.to_s)
+		pagehtmlcode = FileToHtml.new(project_name, author, filepath.to_s, File.basename(filepath.to_s))
 		Std::file_put_content(filename + ".html", pagehtmlcode.to_s)
 		puts "----------"
 		puts "PATH     : " + path
